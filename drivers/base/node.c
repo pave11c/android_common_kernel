@@ -165,7 +165,7 @@ static ssize_t name##_show(struct device *dev,				\
 	return sysfs_emit(buf, "%u\n",					\
 			  to_access_nodes(dev)->hmem_attrs.name);	\
 }									\
-static DEVICE_ATTR_RO(name)
+static DEVICE_ATTR_RO(name);
 
 ACCESS_ATTR(read_bandwidth);
 ACCESS_ATTR(read_latency);
@@ -471,7 +471,7 @@ static ssize_t node_read_meminfo(struct device *dev,
 				    HPAGE_PMD_NR)
 #endif
 			    );
-	len += hugetlb_report_node_meminfo(buf, len, nid);
+	len += hugetlb_report_node_meminfo(nid, buf + len);
 	return len;
 }
 
