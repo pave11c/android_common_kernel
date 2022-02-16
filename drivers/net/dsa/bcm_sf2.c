@@ -563,17 +563,11 @@ static int bcm_sf2_mdio_register(struct dsa_switch *ds)
 	}
 
 	err = mdiobus_register(priv->slave_mii_bus);
-	if (err && dn)
-		goto err_free_slave_mii_bus;
+	if (err && dn) {
+		mdiobus_free(priv->slave_mii_bus);
+		of_node_put(dn);
+	}
 
-	return 0;
-
-err_free_slave_mii_bus:
-	mdiobus_free(priv->slave_mii_bus);
-err_put_master_mii_bus_dev:
-	put_device(&priv->master_mii_bus->dev);
-err_of_node_put:
-	of_node_put(dn);
 	return err;
 }
 
@@ -581,7 +575,6 @@ static void bcm_sf2_mdio_unregister(struct bcm_sf2_priv *priv)
 {
 	mdiobus_unregister(priv->slave_mii_bus);
 	mdiobus_free(priv->slave_mii_bus);
-	put_device(&priv->master_mii_bus->dev);
 	of_node_put(priv->master_mii_dn);
 }
 

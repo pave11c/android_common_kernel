@@ -944,16 +944,6 @@ static int isotp_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 		goto err_out_drop;
 	}
 
-	/* take care of a potential SF_DL ESC offset for TX_DL > 8 */
-	off = (so->tx.ll_dl > CAN_MAX_DLEN) ? 1 : 0;
-
-	/* does the given data fit into a single frame for SF_BROADCAST? */
-	if ((isotp_bc_flags(so) == CAN_ISOTP_SF_BROADCAST) &&
-	    (size > so->tx.ll_dl - SF_PCI_SZ4 - ae - off)) {
-		err = -EINVAL;
-		goto err_out_drop;
-	}
-
 	err = memcpy_from_msg(so->tx.buf, msg, size);
 	if (err < 0)
 		goto err_out_drop;
@@ -1052,15 +1042,8 @@ static int isotp_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 	err = can_send(skb, 1);
 	dev_put(dev);
 	if (err) {
-		pr_notice_once("can-isotp: %s: can_send_ret %pe\n",
-			       __func__, ERR_PTR(err));
-
-		/* no transmission -> no timeout monitoring */
-		hrtimer_cancel(&so->txtimer);
-
-		/* reset consecutive frame echo tag */
-		so->cfecho = 0;
-
+		pr_notice_once("can-isotp: %s: can_send_ret %d\n",
+			       __func__, err);
 		goto err_out_drop;
 	}
 
@@ -1077,15 +1060,13 @@ static int isotp_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 
 	return size;
 
-err_event_drop:
-	/* got signal: force tx state machine to be idle */
-	so->tx.state = ISOTP_IDLE;
-	hrtimer_cancel(&so->txfrtimer);
-	hrtimer_cancel(&so->txtimer);
 err_out_drop:
 	/* drop this PDU and unlock a potential wait queue */
-	so->tx.state = ISOTP_IDLE;
-	wake_up_interruptible(&so->wait);
+	old_state = ISOTP_IDLE;
+err_out:
+	so->tx.state = old_state;
+	if (so->tx.state == ISOTP_IDLE)
+		wake_up_interruptible(&so->wait);
 
 	return err;
 }
