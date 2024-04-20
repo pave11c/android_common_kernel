@@ -1556,9 +1556,7 @@ static struct xfrm_state *xfrm_state_clone(struct xfrm_state *orig,
 	x->km.seq = orig->km.seq;
 	x->replay = orig->replay;
 	x->preplay = orig->preplay;
-	x->mapping_maxage = orig->mapping_maxage;
-	x->new_mapping = 0;
-	x->new_mapping_sport = 0;
+	x->lastused = orig->lastused;
 
 	return x;
 
@@ -2220,7 +2218,7 @@ int km_query(struct xfrm_state *x, struct xfrm_tmpl *t, struct xfrm_policy *pol)
 }
 EXPORT_SYMBOL(km_query);
 
-static int __km_new_mapping(struct xfrm_state *x, xfrm_address_t *ipaddr, __be16 sport)
+int km_new_mapping(struct xfrm_state *x, xfrm_address_t *ipaddr, __be16 sport)
 {
 	int err = -EINVAL;
 	struct xfrm_mgr *km;
@@ -2234,24 +2232,6 @@ static int __km_new_mapping(struct xfrm_state *x, xfrm_address_t *ipaddr, __be16
 	}
 	rcu_read_unlock();
 	return err;
-}
-
-int km_new_mapping(struct xfrm_state *x, xfrm_address_t *ipaddr, __be16 sport)
-{
-	int ret = 0;
-
-	if (x->mapping_maxage) {
-		if ((jiffies / HZ - x->new_mapping) > x->mapping_maxage ||
-		    x->new_mapping_sport != sport) {
-			x->new_mapping_sport = sport;
-			x->new_mapping = jiffies / HZ;
-			ret = __km_new_mapping(x, ipaddr, sport);
-		}
-	} else {
-		ret = __km_new_mapping(x, ipaddr, sport);
-	}
-
-	return ret;
 }
 EXPORT_SYMBOL(km_new_mapping);
 
@@ -2590,7 +2570,7 @@ int __xfrm_init_state(struct xfrm_state *x, bool init_replay, bool offload)
 	int err;
 
 	if (family == AF_INET &&
-	    xs_net(x)->ipv4.sysctl_ip_no_pmtu_disc)
+	    READ_ONCE(xs_net(x)->ipv4.sysctl_ip_no_pmtu_disc))
 		x->props.flags |= XFRM_STATE_NOPMTUDISC;
 
 	err = -EPROTONOSUPPORT;
@@ -2611,9 +2591,6 @@ int __xfrm_init_state(struct xfrm_state *x, bool init_replay, bool offload)
 
 		inner_mode = xfrm_get_mode(x->props.mode, x->props.family);
 		if (inner_mode == NULL)
-			goto error;
-
-		if (!(inner_mode->flags & XFRM_MODE_FLAG_TUNNEL))
 			goto error;
 
 		x->inner_mode = *inner_mode;

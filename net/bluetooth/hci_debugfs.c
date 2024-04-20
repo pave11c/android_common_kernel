@@ -125,7 +125,7 @@ static int device_list_show(struct seq_file *f, void *ptr)
 	struct bdaddr_list *b;
 
 	hci_dev_lock(hdev);
-	list_for_each_entry(b, &hdev->accept_list, list)
+	list_for_each_entry(b, &hdev->whitelist, list)
 		seq_printf(f, "%pMR (type %u)\n", &b->bdaddr, b->bdaddr_type);
 	list_for_each_entry(p, &hdev->le_conn_params, list) {
 		seq_printf(f, "%pMR (type %u) %u\n", &p->addr, p->addr_type,
@@ -144,7 +144,7 @@ static int blacklist_show(struct seq_file *f, void *p)
 	struct bdaddr_list *b;
 
 	hci_dev_lock(hdev);
-	list_for_each_entry(b, &hdev->reject_list, list)
+	list_for_each_entry(b, &hdev->blacklist, list)
 		seq_printf(f, "%pMR (type %u)\n", &b->bdaddr, b->bdaddr_type);
 	hci_dev_unlock(hdev);
 
@@ -734,7 +734,7 @@ static int white_list_show(struct seq_file *f, void *ptr)
 	struct bdaddr_list *b;
 
 	hci_dev_lock(hdev);
-	list_for_each_entry(b, &hdev->le_accept_list, list)
+	list_for_each_entry(b, &hdev->le_white_list, list)
 		seq_printf(f, "%pMR (type %u)\n", &b->bdaddr, b->bdaddr_type);
 	hci_dev_unlock(hdev);
 
@@ -994,10 +994,12 @@ static int min_key_size_set(void *data, u64 val)
 {
 	struct hci_dev *hdev = data;
 
-	if (val > hdev->le_max_key_size || val < SMP_MIN_ENC_KEY_SIZE)
-		return -EINVAL;
-
 	hci_dev_lock(hdev);
+	if (val > hdev->le_max_key_size || val < SMP_MIN_ENC_KEY_SIZE) {
+		hci_dev_unlock(hdev);
+		return -EINVAL;
+	}
+
 	hdev->le_min_key_size = val;
 	hci_dev_unlock(hdev);
 
@@ -1022,10 +1024,12 @@ static int max_key_size_set(void *data, u64 val)
 {
 	struct hci_dev *hdev = data;
 
-	if (val > SMP_MAX_ENC_KEY_SIZE || val < hdev->le_min_key_size)
-		return -EINVAL;
-
 	hci_dev_lock(hdev);
+	if (val > SMP_MAX_ENC_KEY_SIZE || val < hdev->le_min_key_size) {
+		hci_dev_unlock(hdev);
+		return -EINVAL;
+	}
+
 	hdev->le_max_key_size = val;
 	hci_dev_unlock(hdev);
 
@@ -1145,7 +1149,7 @@ void hci_debugfs_create_le(struct hci_dev *hdev)
 				    &force_static_address_fops);
 
 	debugfs_create_u8("white_list_size", 0444, hdev->debugfs,
-			  &hdev->le_accept_list_size);
+			  &hdev->le_white_list_size);
 	debugfs_create_file("white_list", 0444, hdev->debugfs, hdev,
 			    &white_list_fops);
 	debugfs_create_u8("resolv_list_size", 0444, hdev->debugfs,

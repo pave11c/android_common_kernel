@@ -7,7 +7,9 @@
 #include <linux/bio.h>
 #include <linux/blkdev.h>
 #include <linux/scatterlist.h>
+#ifndef __GENKSYMS__
 #include <linux/blk-cgroup.h>
+#endif
 
 #include <trace/events/block.h>
 
@@ -800,6 +802,8 @@ static struct request *attempt_merge(struct request_queue *q,
 
 	if (!blk_discard_mergable(req))
 		elv_merge_requests(q, req, next);
+
+	blk_crypto_rq_put_keyslot(next);
 
 	/*
 	 * 'next' is going away, so update stats accordingly

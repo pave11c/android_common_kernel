@@ -22,8 +22,8 @@ struct insn_state {
 struct instruction {
 	struct list_head list;
 	struct hlist_node hash;
-	struct list_head static_call_node;
 	struct list_head mcount_loc_node;
+	struct list_head call_node;
 	struct section *sec;
 	unsigned long offset;
 	unsigned int len;
