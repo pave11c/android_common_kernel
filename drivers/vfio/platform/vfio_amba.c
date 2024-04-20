@@ -73,8 +73,7 @@ static int vfio_amba_probe(struct amba_device *adev, const struct amba_id *id)
 
 static void vfio_amba_remove(struct amba_device *adev)
 {
-	struct vfio_platform_device *vdev =
-		vfio_platform_remove_common(&adev->dev);
+	struct vfio_platform_device *vdev;
 
 	vdev = vfio_platform_remove_common(&adev->dev);
 	if (vdev) {
