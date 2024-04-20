@@ -267,7 +267,7 @@ static void init_insn_state(struct insn_state *state, struct section *sec)
 	 * not correctly determine insn->call_dest->sec (external symbols do
 	 * not have a section).
 	 */
-	if (vmlinux && sec)
+	if (vmlinux && noinstr && sec)
 		state->noinstr = sec->noinstr;
 }
 
@@ -700,6 +700,78 @@ static int create_return_sites_sections(struct objtool_file *file)
 	return 0;
 }
 
+static int create_mcount_loc_sections(struct objtool_file *file)
+{
+	struct section *sec, *reloc_sec;
+	struct reloc *reloc;
+	unsigned long *loc;
+	struct instruction *insn;
+	int idx;
+
+	sec = find_section_by_name(file->elf, "__mcount_loc");
+	if (sec) {
+		INIT_LIST_HEAD(&file->mcount_loc_list);
+		WARN("file already has __mcount_loc section, skipping");
+		return 0;
+	}
+
+	if (list_empty(&file->mcount_loc_list))
+		return 0;
+
+	idx = 0;
+	list_for_each_entry(insn, &file->mcount_loc_list, mcount_loc_node)
+		idx++;
+
+	sec = elf_create_section(file->elf, "__mcount_loc", 0, sizeof(unsigned long), idx);
+	if (!sec)
+		return -1;
+
+	reloc_sec = elf_create_reloc_section(file->elf, sec, SHT_RELA);
+	if (!reloc_sec)
+		return -1;
+
+	idx = 0;
+	list_for_each_entry(insn, &file->mcount_loc_list, mcount_loc_node) {
+
+		loc = (unsigned long *)sec->data->d_buf + idx;
+		memset(loc, 0, sizeof(unsigned long));
+
+		reloc = malloc(sizeof(*reloc));
+		if (!reloc) {
+			perror("malloc");
+			return -1;
+		}
+		memset(reloc, 0, sizeof(*reloc));
+
+		if (insn->sec->sym) {
+			reloc->sym = insn->sec->sym;
+			reloc->addend = insn->offset;
+		} else {
+			reloc->sym = find_symbol_containing(insn->sec, insn->offset);
+
+			if (!reloc->sym) {
+				WARN("missing symbol for insn at offset 0x%lx\n",
+				     insn->offset);
+				return -1;
+			}
+
+			reloc->addend = insn->offset - reloc->sym->offset;
+		}
+
+		reloc->type = R_X86_64_64;
+		reloc->offset = idx * sizeof(unsigned long);
+		reloc->sec = reloc_sec;
+		elf_add_reloc(file->elf, reloc);
+
+		idx++;
+	}
+
+	if (elf_rebuild_reloc_section(file->elf, reloc_sec))
+		return -1;
+
+	return 0;
+}
+
 /*
  * Warnings shouldn't be reported for ignored functions.
  */
@@ -746,7 +818,7 @@ static void add_ignores(struct objtool_file *file)
 static const char *uaccess_safe_builtin[] = {
 	/* KASAN */
 	"kasan_report",
-	"check_memory_region",
+	"kasan_check_range",
 	/* KASAN out-of-line */
 	"__asan_loadN_noabort",
 	"__asan_load1_noabort",
@@ -928,6 +1000,37 @@ static int add_ignore_alternatives(struct objtool_file *file)
 	}
 
 	return 0;
+}
+
+/*
+ * CONFIG_CFI_CLANG: Check if the section is a CFI jump table or a
+ * compiler-generated CFI handler.
+ */
+static bool is_cfi_section(struct section *sec)
+{
+	return (sec->name &&
+		(!strncmp(sec->name, ".text..L.cfi.jumptable", 22) ||
+		 !strcmp(sec->name, ".text.__cfi_check")));
+}
+
+/*
+ * CONFIG_CFI_CLANG: Ignore CFI jump tables.
+ */
+static void add_cfi_jumptables(struct objtool_file *file)
+{
+	struct section *sec;
+	struct symbol *func;
+	struct instruction *insn;
+
+	for_each_sec(file, sec) {
+		if (!is_cfi_section(sec))
+			continue;
+
+		list_for_each_entry(func, &sec->symbol_list, list) {
+			sym_for_each_insn(file, func, insn)
+				insn->ignore = true;
+		}
+	}
 }
 
 __weak bool arch_is_retpoline(struct symbol *sym)
@@ -1137,6 +1240,10 @@ static int add_jump_destinations(struct objtool_file *file)
 		}
 
 		insn->jump_dest = find_insn(file, dest_sec, dest_off);
+
+		if (!insn->jump_dest && dest_sec->len == dest_off)
+			insn->jump_dest = find_last_insn(file, dest_sec);
+
 		if (!insn->jump_dest) {
 			struct symbol *sym = find_symbol_by_offset(dest_sec, dest_off);
 
@@ -1146,6 +1253,9 @@ static int add_jump_destinations(struct objtool_file *file)
 			 * handled later in handle_group_alt().
 			 */
 			if (!strcmp(insn->sec->name, ".altinstr_replacement"))
+				continue;
+
+			if (is_cfi_section(insn->sec))
 				continue;
 
 			/*
@@ -1252,22 +1362,68 @@ static int add_call_destinations(struct objtool_file *file)
 
 		} else if (reloc->sym->type == STT_SECTION) {
 			dest_off = arch_dest_reloc_offset(reloc->addend);
-			dest = find_call_destination(reloc->sym->sec, dest_off);
-			if (!dest) {
+			insn->call_dest = find_call_destination(reloc->sym->sec,
+								dest_off);
+			if (!insn->call_dest) {
+				if (is_cfi_section(reloc->sym->sec))
+					continue;
+
 				WARN_FUNC("can't find call dest symbol at %s+0x%lx",
 					  insn->sec, insn->offset,
 					  reloc->sym->sec->name,
 					  dest_off);
 				return -1;
 			}
-
-			add_call_dest(file, insn, dest, false);
-
-		} else if (reloc->sym->retpoline_thunk) {
-			add_retpoline_call(file, insn);
-
 		} else
-			add_call_dest(file, insn, reloc->sym, false);
+			insn->call_dest = reloc->sym;
+
+		if (insn->call_dest && insn->call_dest->static_call_tramp) {
+			list_add_tail(&insn->static_call_node,
+				      &file->static_call_list);
+		}
+
+		/*
+		 * Many compilers cannot disable KCOV with a function attribute
+		 * so they need a little help, NOP out any KCOV calls from noinstr
+		 * text.
+		 */
+		if (insn->sec->noinstr &&
+		    !strncmp(insn->call_dest->name, "__sanitizer_cov_", 16)) {
+			if (reloc) {
+				reloc->type = R_NONE;
+				elf_write_reloc(file->elf, reloc);
+			}
+
+			elf_write_insn(file->elf, insn->sec,
+				       insn->offset, insn->len,
+				       arch_nop_insn(insn->len));
+			insn->type = INSN_NOP;
+		}
+
+		if (mcount && !strcmp(insn->call_dest->name, "__fentry__")) {
+			if (reloc) {
+				reloc->type = R_NONE;
+				elf_write_reloc(file->elf, reloc);
+			}
+
+			elf_write_insn(file->elf, insn->sec,
+				       insn->offset, insn->len,
+				       arch_nop_insn(insn->len));
+
+			insn->type = INSN_NOP;
+
+			list_add_tail(&insn->mcount_loc_node,
+				      &file->mcount_loc_list);
+		}
+
+		/*
+		 * Whatever stack impact regular CALLs have, should be undone
+		 * by the RETURN of the called function.
+		 *
+		 * Annotated intra-function calls retain the stack_ops but
+		 * are converted to JUMP, see read_intra_function_calls().
+		 */
+		remove_insn_ops(insn);
 	}
 
 	return 0;
@@ -2008,6 +2164,7 @@ static int decode_sections(struct objtool_file *file)
 
 	add_ignores(file);
 	add_uaccess_safe(file);
+	add_cfi_jumptables(file);
 
 	ret = add_ignore_alternatives(file);
 	if (ret)
@@ -3531,25 +3688,11 @@ int check(struct objtool_file *file)
 		goto out;
 	warnings += ret;
 
-	if (retpoline) {
-		ret = create_retpoline_sites_sections(file);
+	if (mcount) {
+		ret = create_mcount_loc_sections(file);
 		if (ret < 0)
 			goto out;
 		warnings += ret;
-	}
-
-	if (rethunk) {
-		ret = create_return_sites_sections(file);
-		if (ret < 0)
-			goto out;
-		warnings += ret;
-	}
-
-	if (stats) {
-		printf("nr_insns_visited: %ld\n", nr_insns_visited);
-		printf("nr_cfi: %ld\n", nr_cfi);
-		printf("nr_cfi_reused: %ld\n", nr_cfi_reused);
-		printf("nr_cfi_cache: %ld\n", nr_cfi_cache);
 	}
 
 out:

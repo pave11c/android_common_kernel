@@ -119,7 +119,6 @@ struct uvc_device {
 	struct usb_function func;
 	struct uvc_video video;
 	bool func_connected;
-	wait_queue_head_t func_connected_queue;
 
 	/* Descriptors */
 	struct {

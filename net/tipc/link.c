@@ -344,11 +344,6 @@ char tipc_link_plane(struct tipc_link *l)
 	return l->net_plane;
 }
 
-struct net *tipc_link_net(struct tipc_link *l)
-{
-	return l->net;
-}
-
 void tipc_link_update_caps(struct tipc_link *l, u16 capabilities)
 {
 	l->peer_caps = capabilities;
@@ -1263,11 +1258,8 @@ static bool tipc_data_input(struct tipc_link *l, struct sk_buff *skb,
 		return false;
 #ifdef CONFIG_TIPC_CRYPTO
 	case MSG_CRYPTO:
-		if (TIPC_SKB_CB(skb)->decrypted) {
-			tipc_crypto_msg_rcv(l->net, skb);
-			return true;
-		}
-		fallthrough;
+		tipc_crypto_msg_rcv(l->net, skb);
+		return true;
 #endif
 	default:
 		pr_warn("Dropping received illegal msg type\n");
@@ -2250,11 +2242,6 @@ static int tipc_link_proto_rcv(struct tipc_link *l, struct sk_buff *skb,
 		break;
 
 	case STATE_MSG:
-		/* Validate Gap ACK blocks, drop if invalid */
-		glen = tipc_get_gap_ack_blks(&ga, l, hdr, true);
-		if (glen > dlen)
-			break;
-
 		l->rcv_nxt_state = msg_seqno(hdr) + 1;
 
 		/* Update own tolerance if peer indicates a non-zero value */
@@ -2280,6 +2267,10 @@ static int tipc_link_proto_rcv(struct tipc_link *l, struct sk_buff *skb,
 			break;
 		}
 
+		/* Receive Gap ACK blocks from peer if any */
+		glen = tipc_get_gap_ack_blks(&ga, l, hdr, true);
+		if(glen > dlen)
+			break;
 		tipc_mon_rcv(l->net, data + glen, dlen - glen, l->addr,
 			     &l->mon_state, l->bearer_id);
 

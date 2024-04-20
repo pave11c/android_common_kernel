@@ -26,14 +26,5 @@ SYM_FUNC_START_PI(clear_page)
 	tst	x0, #(PAGE_SIZE - 1)
 	b.ne	1b
 	ret
-
-2:	stnp	xzr, xzr, [x0]
-	stnp	xzr, xzr, [x0, #16]
-	stnp	xzr, xzr, [x0, #32]
-	stnp	xzr, xzr, [x0, #48]
-	add	x0, x0, #64
-	tst	x0, #(PAGE_SIZE - 1)
-	b.ne	2b
-	ret
 SYM_FUNC_END_PI(clear_page)
 EXPORT_SYMBOL(clear_page)
